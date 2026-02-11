@@ -1,18 +1,11 @@
-# 设置最低 CMake 版本要求
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.16)
+project(CacheSystem)
 
-# 设置项目名称
-project(KCacheSystem)
-
-# 设置 C++ 标准
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 指定源文件目录下的所有 .cpp 文件
-file(GLOB SOURCES "*.cpp")
+add_library(cache_lib INTERFACE)
+target_include_directories(cache_lib INTERFACE include)
 
-# 设置目标可执行文件
-add_executable(main ${SOURCES})
-
-# 清理中间的 .o 文件
-set_target_properties(main PROPERTIES CLEAN_DIRECT_OUTPUT 1)
+add_executable(main tests/testAllCachePolicy.cpp)
+target_link_libraries(main PRIVATE cache_lib)
