@@ -1,13 +1,13 @@
 #pragma once
 
+#include "ICachePolicy.h"
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <vector>
-
-#include "ICachePolicy.h"
 
 template <typename Key, typename Value> class LfuCache;
 
@@ -76,8 +76,8 @@ public:
   using NodeMap = std::unordered_map<Key, NodePtr>;
 
   LfuCache(int capacity, int maxAverageNum = 1000000)
-      : capacity_(capacity), minFreq_(INT8_MAX), maxAverageNum_(maxAverageNum),
-        curAverageNum_(0), curTotalNum_(0) {}
+      : capacity_(capacity), minFreq_(std::numeric_limits<int>::max()),
+        maxAverageNum_(maxAverageNum), curAverageNum_(0), curTotalNum_(0) {}
 
   ~LfuCache() override = default;
 
@@ -111,7 +111,7 @@ public:
   }
 
   Value get(Key key) override {
-    Value value;
+    Value value{};
     get(key, value);
     return value;
   }
@@ -120,6 +120,9 @@ public:
   void purge() {
     nodeMap_.clear();
     freqToFreqList_.clear();
+    minFreq_ = std::numeric_limits<int>::max();
+    curAverageNum_ = 0;
+    curTotalNum_ = 0;
   }
 
 private:
@@ -144,7 +147,7 @@ private:
   int curTotalNum_;   // 当前访问所有缓存次数总数
   std::mutex mutex_;  // 互斥锁
   NodeMap nodeMap_;   // key 到 缓存节点的映射
-  std::unordered_map<int, FreqList<Key, Value> *>
+  std::unordered_map<int, std::unique_ptr<FreqList<Key, Value>>>
       freqToFreqList_; // 访问频次到该频次链表的映射
 };
 
@@ -197,7 +200,10 @@ void LfuCache<Key, Value>::removeFromFreqList(NodePtr node) {
     return;
 
   auto freq = node->freq;
-  freqToFreqList_[freq]->removeNode(node);
+  auto it = freqToFreqList_.find(freq);
+  if (it == freqToFreqList_.end() || !it->second)
+    return;
+  it->second->removeNode(node);
 }
 
 template <typename Key, typename Value>
@@ -208,12 +214,13 @@ void LfuCache<Key, Value>::addToFreqList(NodePtr node) {
 
   // 添加进入相应的频次链表前需要判断该频次链表是否存在
   auto freq = node->freq;
-  if (freqToFreqList_.find(node->freq) == freqToFreqList_.end()) {
-    // 不存在则创建
-    freqToFreqList_[node->freq] = new FreqList<Key, Value>(node->freq);
+  auto it = freqToFreqList_.find(freq);
+  if (it == freqToFreqList_.end()) {
+    it = freqToFreqList_
+             .emplace(freq, std::make_unique<FreqList<Key, Value>>(freq))
+             .first;
   }
-
-  freqToFreqList_[freq]->addNode(node);
+  it->second->addNode(node);
 }
 
 template <typename Key, typename Value>
@@ -316,7 +323,7 @@ public:
   }
 
   Value get(Key key) {
-    Value value;
+    Value value{};
     get(key, value);
     return value;
   }
