@@ -165,7 +165,7 @@ public:
         historyList_(std::make_unique<LruCache<Key, size_t>>(historyCapacity)) {
   }
 
-  Value get(Key key) {
+  Value get(const Key &key) {
     std::lock_guard<std::mutex> lock(k_mutex_);
     // 首先尝试从主缓存获取数据
     Value value{};
@@ -205,7 +205,7 @@ public:
     return value;
   }
 
-  void put(Key key, Value value) {
+  void put(const Key &key, const Value &value) {
     std::lock_guard<std::mutex> lock(k_mutex_);
     // 检查是否已在主缓存
     Value existingValue{};
@@ -256,7 +256,7 @@ public:
     }
   }
 
-  void put(Key key, Value value) {
+  void put(const Key &key, const Value &value) {
     // 获取key的hash值，并计算出对应的分片索引
     size_t sliceIndex = Hash(key) % sliceNum_;
     lruSliceCaches_[sliceIndex]->put(key, value);

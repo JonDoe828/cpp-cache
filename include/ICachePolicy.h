@@ -2,7 +2,7 @@
 
 template <typename Key, typename Value> class ICachePolicy {
 public:
-  virtual ~ICachePolicy() {};
+  virtual ~ICachePolicy() = default;
 
   // 添加缓存接口
   virtual void put(const Key &key, const Value &value) = 0;
