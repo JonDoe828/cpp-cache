@@ -1,5 +1,5 @@
-# build directory (CMake)
-build/
+# build directories (CMake)
+/build*/
 
 # Local editor and language-server cache
 .cache/

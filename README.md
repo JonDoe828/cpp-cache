@@ -26,6 +26,19 @@ A thread-safe cache library and replicated key-value service based on Raft.
 The cache policies are local acceleration components. Authoritative data is
 owned by an `IKvStore` implementation and is never removed by cache eviction.
 
+```mermaid
+flowchart LR
+    Client[cpp_cache_cli] -->|client RPC| Transport[TcpTransport]
+    Peer[Peer Raft nodes] <-->|RequestVote / AppendEntries / InstallSnapshot| Transport
+    Transport <--> Node[RaftNode]
+    Node -->|consensus state| Core[RaftCore]
+    Core -->|term, vote, log, snapshot| RaftStorage[FileRaftStorage]
+    Node -->|committed commands| StateMachine[KvStateMachine]
+    StateMachine --> CachedStore[CachedKvStore]
+    CachedStore -->|authoritative data| MemoryStore[InMemoryKvStore]
+    CachedStore -->|local acceleration| Cache[LRU cache]
+```
+
 - `InMemoryKvStore` provides a thread-safe in-memory authoritative store.
 - `CachedKvStore` adds a bounded local LRU cache in front of any `IKvStore`.
 - `KvStateMachine` applies deterministic put, append, and erase commands,
@@ -62,6 +75,31 @@ cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+## Reproducible Raft Benchmark
+
+The benchmark exercises a three-node cluster in one process. Sequential write
+throughput includes Raft replication, majority commit, state-machine apply, and
+snapshot compaction. It uses `InProcessTransport` and `MemoryRaftStorage`, so it
+does not claim TCP or disk-fsync throughput. Failover time starts when the
+leader is isolated and ends when a replacement leader commits its first write.
+
+```bash
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target raft_benchmark -j2
+./build-release/raft_benchmark --operations 2000 --rounds 5 --failovers 7
+```
+
+Example result measured on 2026-08-21 in a local WSL2 environment with GCC
+13.3.0:
+
+| Metric | Samples | p50 | p95 |
+| --- | ---: | ---: | ---: |
+| Sequential committed writes | 5 x 2000 operations | 8,491 ops/s | 8,556 ops/s |
+| Leader isolation to replacement write commit | 7 failovers | 444.54 ms | 564.64 ms |
+
+Results depend on the host and scheduler. The executable prints every sample so
+the summary can be checked rather than inferred from a single run.
 
 ## Run a Three-Node Cluster
 

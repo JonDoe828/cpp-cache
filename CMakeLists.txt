@@ -82,6 +82,10 @@ add_executable(cpp_cache_cli app/client_main.cpp)
 target_link_libraries(cpp_cache_cli PRIVATE raft_lib)
 set_warnings(cpp_cache_cli)
 
+add_executable(raft_benchmark benchmarks/raft_benchmark.cpp)
+target_link_libraries(raft_benchmark PRIVATE raft_lib)
+set_warnings(raft_benchmark)
+
 
 file(GLOB_RECURSE UNIT_TEST_FILES CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/tests/*.test.cpp"
