@@ -1,9 +1,13 @@
+#pragma once
+
 #include "ICachePolicy.h"
+#include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -11,10 +15,12 @@
 template <typename Key, typename Value>
 class LruCache : public ICachePolicy<Key, Value> {
 public:
-  LruCache(int capacity)
-      : capacity_(capacity > 0 ? static_cast<std::size_t>(capacity) : 0) {
+  explicit LruCache(std::size_t capacity) : capacity_(capacity) {
     initializeList();
   }
+
+  explicit LruCache(int capacity)
+      : LruCache(capacity > 0 ? static_cast<std::size_t>(capacity) : 0) {}
 
   ~LruCache() override = default;
 
@@ -55,13 +61,19 @@ public:
   }
 
   // 删除指定元素
-  void remove(const Key &key) {
+  virtual void remove(const Key &key) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = nodeMap_.find(key);
     if (it != nodeMap_.end()) {
       removeNode(it->second);
       nodeMap_.erase(it);
     }
+  }
+
+  virtual void purge() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    nodeMap_.clear();
+    initializeList();
   }
 
 private:
@@ -161,114 +173,110 @@ template <typename Key, typename Value>
 class LruKCache : public LruCache<Key, Value> {
 public:
   LruKCache(int capacity, int historyCapacity, int k)
-      : LruCache<Key, Value>(capacity), k_(k),
-        historyList_(std::make_unique<LruCache<Key, size_t>>(historyCapacity)) {
+      : LruCache<Key, Value>(capacity),
+        k_(k > 0 ? static_cast<std::size_t>(k) : std::size_t{1}),
+        historyList_(
+            std::make_unique<LruCache<Key, HistoryEntry>>(historyCapacity)) {}
+
+  bool get(const Key &key, Value &value) override {
+    std::lock_guard<std::mutex> lock(k_mutex_);
+    if (LruCache<Key, Value>::get(key, value))
+      return true;
+
+    HistoryEntry history;
+    (void)historyList_->get(key, history);
+    ++history.accessCount;
+
+    if (history.accessCount >= k_ && history.value) {
+      value = *history.value;
+      historyList_->remove(key);
+      LruCache<Key, Value>::put(key, value);
+      return true;
+    }
+
+    historyList_->put(key, history);
+    return false;
   }
 
-  Value get(const Key &key) {
-    std::lock_guard<std::mutex> lock(k_mutex_);
-    // 首先尝试从主缓存获取数据
+  Value get(const Key &key) override {
     Value value{};
-    bool inMainCache = LruCache<Key, Value>::get(key, value);
-
-    // 获取并更新访问历史计数
-    size_t historyCount = historyList_->get(key);
-    historyCount++;
-    historyList_->put(key, historyCount);
-
-    // 如果数据在主缓存中，直接返回
-    if (inMainCache) {
-      return value;
-    }
-
-    // 如果数据不在主缓存，但访问次数达到了k次
-    if (historyCount >= k_) {
-      // 检查是否有历史值记录
-      auto it = historyValueMap_.find(key);
-      if (it != historyValueMap_.end()) {
-        // 有历史值，将其添加到主缓存
-        Value storedValue = it->second;
-
-        // 从历史记录移除
-        historyList_->remove(key);
-        historyValueMap_.erase(it);
-
-        // 添加到主缓存
-        LruCache<Key, Value>::put(key, storedValue);
-
-        return storedValue;
-      }
-      // 没有历史值记录，无法添加到缓存，返回默认值
-    }
-
-    // 数据不在主缓存且不满足添加条件，返回默认值
+    (void)get(key, value);
     return value;
   }
 
-  void put(const Key &key, const Value &value) {
+  void put(const Key &key, const Value &value) override {
     std::lock_guard<std::mutex> lock(k_mutex_);
-    // 检查是否已在主缓存
     Value existingValue{};
-    bool inMainCache = LruCache<Key, Value>::get(key, existingValue);
-
-    if (inMainCache) {
-      // 已在主缓存，直接更新
+    if (LruCache<Key, Value>::get(key, existingValue)) {
       LruCache<Key, Value>::put(key, value);
       return;
     }
 
-    // 获取并更新访问历史
-    std::size_t historyCount = historyList_->get(key);
-    historyCount++;
-    historyList_->put(key, historyCount);
+    HistoryEntry history;
+    (void)historyList_->get(key, history);
+    ++history.accessCount;
+    history.value = value;
 
-    // 保存值到历史记录映射，供后续get操作使用
-    historyValueMap_[key] = value;
-
-    // 检查是否达到k次访问阈值
-    if (historyCount >= k_) {
-      // 达到阈值，添加到主缓存
+    if (history.accessCount >= k_) {
       historyList_->remove(key);
-      historyValueMap_.erase(key);
       LruCache<Key, Value>::put(key, value);
+      return;
     }
+
+    historyList_->put(key, history);
+  }
+
+  void remove(const Key &key) override {
+    std::lock_guard<std::mutex> lock(k_mutex_);
+    LruCache<Key, Value>::remove(key);
+    historyList_->remove(key);
+  }
+
+  void purge() override {
+    std::lock_guard<std::mutex> lock(k_mutex_);
+    LruCache<Key, Value>::purge();
+    historyList_->purge();
   }
 
 private:
-  int k_; // 进入缓存队列的评判标准
-  mutable std::mutex k_mutex_;
-  std::unique_ptr<LruCache<Key, size_t>>
-      historyList_; // 访问数据历史记录(value为访问次数)
-  std::unordered_map<Key, Value> historyValueMap_; // 存储未达到k次访问的数据值
+  struct HistoryEntry {
+    std::size_t accessCount{0};
+    std::optional<Value> value;
+  };
+
+  std::size_t k_;
+  std::mutex k_mutex_;
+  std::unique_ptr<LruCache<Key, HistoryEntry>> historyList_;
 };
 
 // lru优化：对lru进行分片，提高高并发使用的性能
-template <typename Key, typename Value> class KHashLruCaches {
+template <typename Key, typename Value>
+class KHashLruCaches : public ICachePolicy<Key, Value> {
 public:
   KHashLruCaches(size_t capacity, int sliceNum)
-      : capacity_(capacity),
-        sliceNum_(sliceNum > 0 ? sliceNum
-                               : std::thread::hardware_concurrency()) {
-    size_t sliceSize = std::ceil(
-        capacity / static_cast<double>(sliceNum_)); // 获取每个分片的大小
-    for (int i = 0; i < sliceNum_; ++i) {
-      lruSliceCaches_.emplace_back(new LruCache<Key, Value>(sliceSize));
+      : capacity_(capacity), sliceNum_(resolveSliceCount(capacity, sliceNum)) {
+    const std::size_t baseSize = capacity_ / sliceNum_;
+    const std::size_t remainder = capacity_ % sliceNum_;
+    for (std::size_t i = 0; i < sliceNum_; ++i) {
+      const std::size_t sliceSize = baseSize + (i < remainder ? 1 : 0);
+      lruSliceCaches_.emplace_back(
+          std::make_unique<LruCache<Key, Value>>(sliceSize));
     }
   }
 
-  void put(const Key &key, const Value &value) {
+  void put(const Key &key, const Value &value) override {
     // 获取key的hash值，并计算出对应的分片索引
     size_t sliceIndex = Hash(key) % sliceNum_;
     lruSliceCaches_[sliceIndex]->put(key, value);
   }
 
-  bool get(Key key, Value &value) {
+  bool get(const Key &key, Value &value) override {
     // 获取key的hash值，并计算出对应的分片索引
     size_t sliceIndex = Hash(key) % sliceNum_;
     return lruSliceCaches_[sliceIndex]->get(key, value);
   }
 
-  Value get(Key key) {
+  Value get(const Key &key) override {
     Value value{};
     get(key, value);
     return value;
@@ -276,14 +284,20 @@ public:
 
 private:
   // 将key转换为对应hash值
-  size_t Hash(Key key) {
-    std::hash<Key> hashFunc;
-    return hashFunc(key);
+  static std::size_t resolveSliceCount(std::size_t capacity, int requested) {
+    std::size_t count = requested > 0
+                            ? static_cast<std::size_t>(requested)
+                            : std::max(1u, std::thread::hardware_concurrency());
+    if (capacity > 0)
+      count = std::min(count, capacity);
+    return std::max<std::size_t>(1, count);
   }
+
+  std::size_t Hash(const Key &key) const { return std::hash<Key>{}(key); }
 
 private:
   std::size_t capacity_; // 总容量
-  int sliceNum_;         // 切片数量
+  std::size_t sliceNum_; // 切片数量
   std::vector<std::unique_ptr<LruCache<Key, Value>>>
       lruSliceCaches_; // 切片LRU缓存
 };

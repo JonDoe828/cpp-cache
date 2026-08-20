@@ -1,2 +1,8 @@
 # build directory (CMake)
 build/
+
+# Local editor and language-server cache
+.cache/
+
+# Local Raft node state
+data/

@@ -4,7 +4,6 @@
 #include "LruCache.h"
 
 #include <array>
-#include <chrono>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -13,22 +12,6 @@
 #include <vector>
 
 namespace {
-
-class Timer {
-public:
-  Timer() noexcept : start_(std::chrono::steady_clock::now()) {}
-
-  // 返回毫秒（double），符合你原来的语义
-  double elapsed_ms() const noexcept {
-    const auto now = std::chrono::steady_clock::now();
-    return static_cast<double>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - start_)
-            .count());
-  }
-
-private:
-  std::chrono::time_point<std::chrono::steady_clock> start_;
-};
 
 // 辅助函数：打印结果
 void printResults(const std::string &testName, int capacity,
@@ -57,8 +40,7 @@ void printResults(const std::string &testName, int capacity,
     std::cout << (i < names.size() ? names[i]
                                    : "Algorithm " + std::to_string(i + 1))
               << " - 命中率: " << std::fixed << std::setprecision(2) << hitRate
-              << "% "
-              << "(" << h << "/" << ops << ")\n";
+              << "% " << "(" << h << "/" << ops << ")\n";
   }
 
   std::cout << "\n";
@@ -69,7 +51,7 @@ struct Rng {
   std::mt19937 gen;
   std::uniform_int_distribution<int> pct{0, 99}; // 0..99
 
-  Rng() : gen(std::random_device{}()) {}
+  explicit Rng(std::uint32_t seed) : gen(seed) {}
 
   int percent() { return pct(gen); }
 
@@ -108,12 +90,12 @@ void testHotDataAccess() {
   std::vector<std::uint64_t> hits(caches.size(), 0);
   std::vector<std::uint64_t> get_operations(caches.size(), 0);
 
-  Rng rng;
   // 这些分布只依赖常量，放外面复用
   std::uniform_int_distribution<int> hotKey(0, HOT_KEYS - 1);
   std::uniform_int_distribution<int> coldKey(0, COLD_KEYS - 1);
 
   for (std::size_t i = 0; i < caches.size(); ++i) {
+    Rng rng(0xCACE0001u);
     // 预热：插 HOT_KEYS
     for (int key = 0; key < HOT_KEYS; ++key) {
       caches[i]->put(key, "value" + std::to_string(key));
@@ -171,10 +153,10 @@ void testLoopPattern() {
   std::vector<std::uint64_t> hits(caches.size(), 0);
   std::vector<std::uint64_t> get_operations(caches.size(), 0);
 
-  Rng rng;
   std::uniform_int_distribution<int> inLoop(0, LOOP_SIZE - 1);
 
   for (std::size_t i = 0; i < caches.size(); ++i) {
+    Rng rng(0xCACE0002u);
     // 预热：加载 20%
     for (int key = 0; key < LOOP_SIZE / 5; ++key) {
       caches[i]->put(key, "loop" + std::to_string(key));
@@ -232,8 +214,6 @@ void testWorkloadShift() {
   std::vector<std::uint64_t> hits(caches.size(), 0);
   std::vector<std::uint64_t> get_operations(caches.size(), 0);
 
-  Rng rng;
-
   // 预建一些常用分布（避免到处 %）
   std::uniform_int_distribution<int> hot5(0, 4);
   std::uniform_int_distribution<int> range400(0, 399);
@@ -243,6 +223,7 @@ void testWorkloadShift() {
   std::uniform_int_distribution<int> big350(0, 349);
 
   for (std::size_t i = 0; i < caches.size(); ++i) {
+    Rng rng(0xCACE0003u);
     // 预热：30 个键
     for (int key = 0; key < 30; ++key) {
       caches[i]->put(key, "init" + std::to_string(key));

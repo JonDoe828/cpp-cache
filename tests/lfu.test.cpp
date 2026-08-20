@@ -112,6 +112,28 @@ TEST_CASE("LFU: purge clears all entries", "[lfu]") {
   REQUIRE_FALSE(cache.get(3, v));
 }
 
+TEST_CASE("LFU: aging preserves a valid eviction frequency", "[lfu][aging]") {
+  LfuCache<int, std::string> cache(1, 300);
+  cache.put(1, "hot");
+
+  for (int i = 0; i < 301; ++i)
+    REQUIRE(cache.get(1) == "hot");
+
+  cache.put(2, "new");
+  std::string value;
+  REQUIRE_FALSE(cache.get(1, value));
+  REQUIRE(cache.get(2, value));
+  REQUIRE(value == "new");
+}
+
+TEST_CASE("LFU: negative capacity stores nothing", "[lfu][boundary]") {
+  LfuCache<int, int> cache(-1);
+  cache.put(1, 10);
+
+  int value = 0;
+  REQUIRE_FALSE(cache.get(1, value));
+}
+
 TEST_CASE("KHashLFU: basic put/get works across slices", "[khashlfu]") {
   // sliceNum=2，容量总 10（每片 ceil(10/2)=5）
   KHashLfuCache<int, std::string> cache(/*capacity*/ 10, /*sliceNum*/ 2,
@@ -158,8 +180,8 @@ TEST_CASE("LFU: concurrent smoke test (no crash, values readable)",
   t3.join();
   t4.join();
 
-  // 最后简单验证：至少能读到一些 key（不要求确定值，避免时序不稳定）
-  int v = 0;
-  bool ok = cache.get(0, v) || cache.get(1, v) || cache.get(2, v);
-  REQUIRE(ok);
+  cache.put(1000, 42);
+  int value = 0;
+  REQUIRE(cache.get(1000, value));
+  REQUIRE(value == 42);
 }

@@ -1,84 +1,30 @@
 #pragma once
 
 #include "ICachePolicy.h"
-#include <cmath>
+
+#include <algorithm>
 #include <cstddef>
-#include <limits>
+#include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
-
-template <typename Key, typename Value> class LfuCache;
-
-template <typename Key, typename Value> class FreqList {
-private:
-  struct Node {
-    int freq; // 访问频次
-    Key key;
-    Value value;
-    std::weak_ptr<Node> pre; // 上一结点改为weak_ptr打破循环引用
-    std::shared_ptr<Node> next;
-
-    Node() : freq(1), next(nullptr) {}
-    Node(Key key, Value value)
-        : freq(1), key(key), value(value), next(nullptr) {}
-  };
-
-  using NodePtr = std::shared_ptr<Node>;
-  int freq_;     // 访问频率
-  NodePtr head_; // 假头结点
-  NodePtr tail_; // 假尾结点
-
-public:
-  explicit FreqList(int n) : freq_(n) {
-    head_ = std::make_shared<Node>();
-    tail_ = std::make_shared<Node>();
-    head_->next = tail_;
-    tail_->pre = head_;
-  }
-
-  bool isEmpty() const { return head_->next == tail_; }
-
-  // 提那家结点管理方法
-  void addNode(NodePtr node) {
-    if (!node || !head_ || !tail_)
-      return;
-
-    node->pre = tail_->pre;
-    node->next = tail_;
-    tail_->pre.lock()->next = node; // 使用lock()获取shared_ptr
-    tail_->pre = node;
-  }
-
-  void removeNode(NodePtr node) {
-    if (!node || !head_ || !tail_)
-      return;
-    if (node->pre.expired() || !node->next)
-      return;
-
-    auto pre = node->pre.lock(); // 使用lock()获取shared_ptr
-    pre->next = node->next;
-    node->next->pre = pre;
-    node->next = nullptr; // 确保显式置空next指针，彻底断开节点与链表的连接
-  }
-
-  NodePtr getFirstNode() const { return head_->next; }
-
-  friend class LfuCache<Key, Value>;
-};
 
 template <typename Key, typename Value>
 class LfuCache : public ICachePolicy<Key, Value> {
 public:
-  using Node = typename FreqList<Key, Value>::Node;
-  using NodePtr = std::shared_ptr<Node>;
-  using NodeMap = std::unordered_map<Key, NodePtr>;
+  explicit LfuCache(std::size_t capacity, int maxAverageNum = 1000000)
+      : capacity_(capacity),
+        maxAverageNum_(maxAverageNum > 0
+                           ? static_cast<std::size_t>(maxAverageNum)
+                           : std::size_t{1}) {}
 
-  LfuCache(int capacity, int maxAverageNum = 1000000)
-      : capacity_(capacity), minFreq_(std::numeric_limits<int>::max()),
-        maxAverageNum_(maxAverageNum), curAverageNum_(0), curTotalNum_(0) {}
+  explicit LfuCache(int capacity, int maxAverageNum = 1000000)
+      : LfuCache(capacity > 0 ? static_cast<std::size_t>(capacity) : 0,
+                 maxAverageNum) {}
 
   ~LfuCache() override = default;
 
@@ -87,270 +33,198 @@ public:
       return;
 
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = nodeMap_.find(key);
-    if (it != nodeMap_.end()) {
-      // 重置其value值
-      it->second->value = value;
-      // 找到了直接调整就好了，不用再去get中再找一遍，但其实影响不大
-      Value tmp = value;
-      getInternal(it->second, tmp);
-
+    auto nodeIt = nodes_.find(key);
+    if (nodeIt != nodes_.end()) {
+      nodeIt->second.value = value;
+      promote(nodeIt);
       return;
     }
 
-    putInternal(key, value);
+    if (nodes_.size() >= capacity_)
+      evictLeastFrequent();
+
+    auto &bucket = frequencyBuckets_[1];
+    bucket.push_back(key);
+    auto position = std::prev(bucket.end());
+    nodes_.emplace(key, Entry{value, 1, position});
+    minFrequency_ = 1;
+    ++totalFrequency_;
+    ageIfNeeded();
   }
 
-  // value值为传出参数
   bool get(const Key &key, Value &value) override {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = nodeMap_.find(key);
-    if (it != nodeMap_.end()) {
-      Value tmp = value;
-      getInternal(it->second, tmp);
-      return true;
-    }
+    auto nodeIt = nodes_.find(key);
+    if (nodeIt == nodes_.end())
+      return false;
 
-    return false;
+    value = nodeIt->second.value;
+    promote(nodeIt);
+    return true;
   }
 
   Value get(const Key &key) override {
     Value value{};
-    get(key, value);
+    (void)get(key, value);
     return value;
   }
 
-  // 清空缓存,回收资源
   void purge() {
-    nodeMap_.clear();
-    freqToFreqList_.clear();
-    minFreq_ = std::numeric_limits<int>::max();
-    curAverageNum_ = 0;
-    curTotalNum_ = 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    nodes_.clear();
+    frequencyBuckets_.clear();
+    minFrequency_ = 0;
+    totalFrequency_ = 0;
   }
 
 private:
-  void putInternal(Key key, Value value);       // 添加缓存
-  void getInternal(NodePtr node, Value &value); // 获取缓存
+  using FrequencyList = std::list<Key>;
 
-  void kickOut(); // 移除缓存中的过期数据
+  struct Entry {
+    Value value;
+    std::size_t frequency;
+    typename FrequencyList::iterator position;
+  };
 
-  void removeFromFreqList(NodePtr node); // 从频率列表中移除节点
-  void addToFreqList(NodePtr node);      // 添加到频率列表
+  using NodeMap = std::unordered_map<Key, Entry>;
+  using NodeIterator = typename NodeMap::iterator;
 
-  void addFreqNum();              // 增加平均访问等频率
-  void decreaseFreqNum(int num);  // 减少平均访问等频率
-  void handleOverMaxAverageNum(); // 处理当前平均访问频率超过上限的情况
-  void updateMinFreq();
+  void promote(NodeIterator nodeIt) {
+    const std::size_t oldFrequency = nodeIt->second.frequency;
+    auto bucketIt = frequencyBuckets_.find(oldFrequency);
+    bucketIt->second.erase(nodeIt->second.position);
 
-private:
-  std::size_t capacity_; // 缓存容量
-  int minFreq_;          // 最小访问频次(用于找到最小访问频次结点)
-  int maxAverageNum_;    // 最大平均访问频次
-  int curAverageNum_;    // 当前平均访问频次
-  int curTotalNum_;      // 当前访问所有缓存次数总数
-  std::mutex mutex_;     // 互斥锁
-  NodeMap nodeMap_;      // key 到 缓存节点的映射
-  std::unordered_map<int, std::unique_ptr<FreqList<Key, Value>>>
-      freqToFreqList_; // 访问频次到该频次链表的映射
+    if (bucketIt->second.empty()) {
+      frequencyBuckets_.erase(bucketIt);
+      if (minFrequency_ == oldFrequency)
+        minFrequency_ = oldFrequency + 1;
+    }
+
+    const std::size_t newFrequency = oldFrequency + 1;
+    auto &newBucket = frequencyBuckets_[newFrequency];
+    newBucket.push_back(nodeIt->first);
+    nodeIt->second.frequency = newFrequency;
+    nodeIt->second.position = std::prev(newBucket.end());
+    ++totalFrequency_;
+    ageIfNeeded();
+  }
+
+  void evictLeastFrequent() {
+    auto bucketIt = frequencyBuckets_.find(minFrequency_);
+    if (bucketIt == frequencyBuckets_.end() || bucketIt->second.empty())
+      return;
+
+    Key key = bucketIt->second.front();
+    bucketIt->second.pop_front();
+
+    auto nodeIt = nodes_.find(key);
+    if (nodeIt != nodes_.end()) {
+      totalFrequency_ -= nodeIt->second.frequency;
+      nodes_.erase(nodeIt);
+    }
+
+    if (bucketIt->second.empty())
+      frequencyBuckets_.erase(bucketIt);
+  }
+
+  void ageIfNeeded() {
+    if (nodes_.empty() || totalFrequency_ / nodes_.size() <= maxAverageNum_)
+      return;
+
+    std::vector<std::size_t> frequencies;
+    frequencies.reserve(frequencyBuckets_.size());
+    for (const auto &[frequency, keys] : frequencyBuckets_) {
+      if (!keys.empty())
+        frequencies.push_back(frequency);
+    }
+    std::sort(frequencies.begin(), frequencies.end());
+
+    std::unordered_map<std::size_t, FrequencyList> rebuiltBuckets;
+    std::size_t rebuiltTotal = 0;
+    std::size_t rebuiltMinimum = 0;
+
+    for (const std::size_t frequency : frequencies) {
+      auto bucketIt = frequencyBuckets_.find(frequency);
+      for (const Key &key : bucketIt->second) {
+        auto nodeIt = nodes_.find(key);
+        if (nodeIt == nodes_.end())
+          continue;
+
+        const std::size_t agedFrequency =
+            std::max<std::size_t>(1, frequency / 2);
+        auto &rebuiltBucket = rebuiltBuckets[agedFrequency];
+        rebuiltBucket.push_back(key);
+        nodeIt->second.frequency = agedFrequency;
+        nodeIt->second.position = std::prev(rebuiltBucket.end());
+        rebuiltTotal += agedFrequency;
+        if (rebuiltMinimum == 0 || agedFrequency < rebuiltMinimum)
+          rebuiltMinimum = agedFrequency;
+      }
+    }
+
+    frequencyBuckets_.swap(rebuiltBuckets);
+    totalFrequency_ = rebuiltTotal;
+    minFrequency_ = rebuiltMinimum;
+  }
+
+  std::size_t capacity_;
+  std::size_t maxAverageNum_;
+  std::size_t minFrequency_{0};
+  std::size_t totalFrequency_{0};
+  std::mutex mutex_;
+  NodeMap nodes_;
+  std::unordered_map<std::size_t, FrequencyList> frequencyBuckets_;
 };
 
 template <typename Key, typename Value>
-void LfuCache<Key, Value>::getInternal(NodePtr node, Value &value) {
-  // 找到之后需要将其从低访问频次的链表中删除，并且添加到+1的访问频次链表中，
-  // 访问频次+1, 然后把value值返回
-  value = node->value;
-  // 从原有访问频次的链表中删除节点
-  removeFromFreqList(node);
-  node->freq++;
-  addToFreqList(node);
-  // 如果当前node的访问频次如果等于minFreq+1，并且其前驱链表为空，则说明
-  // freqToFreqList_[node->freq -
-  // 1]链表因node的迁移已经空了，需要更新最小访问频次
-  if (node->freq - 1 == minFreq_ && freqToFreqList_[node->freq - 1]->isEmpty())
-    minFreq_++;
-
-  // 总访问频次和当前平均访问频次都随之增加
-  addFreqNum();
-}
-
-template <typename Key, typename Value>
-void LfuCache<Key, Value>::putInternal(Key key, Value value) {
-  // 如果不在缓存中，则需要判断缓存是否已满
-  if (nodeMap_.size() == capacity_) {
-    // 缓存已满，删除最不常访问的结点，更新当前平均访问频次和总访问频次
-    kickOut();
-  }
-
-  // 创建新结点，将新结点添加进入，更新最小访问频次
-  NodePtr node = std::make_shared<Node>(key, value);
-  nodeMap_[key] = node;
-  addToFreqList(node);
-  addFreqNum();
-  minFreq_ = std::min(minFreq_, 1);
-}
-
-template <typename Key, typename Value> void LfuCache<Key, Value>::kickOut() {
-  NodePtr node = freqToFreqList_[minFreq_]->getFirstNode();
-  removeFromFreqList(node);
-  nodeMap_.erase(node->key);
-  decreaseFreqNum(node->freq);
-}
-
-template <typename Key, typename Value>
-void LfuCache<Key, Value>::removeFromFreqList(NodePtr node) {
-  // 检查结点是否为空
-  if (!node)
-    return;
-
-  auto freq = node->freq;
-  auto it = freqToFreqList_.find(freq);
-  if (it == freqToFreqList_.end() || !it->second)
-    return;
-  it->second->removeNode(node);
-}
-
-template <typename Key, typename Value>
-void LfuCache<Key, Value>::addToFreqList(NodePtr node) {
-  // 检查结点是否为空
-  if (!node)
-    return;
-
-  // 添加进入相应的频次链表前需要判断该频次链表是否存在
-  auto freq = node->freq;
-  auto it = freqToFreqList_.find(freq);
-  if (it == freqToFreqList_.end()) {
-    it = freqToFreqList_
-             .emplace(freq, std::make_unique<FreqList<Key, Value>>(freq))
-             .first;
-  }
-  it->second->addNode(node);
-}
-
-template <typename Key, typename Value>
-void LfuCache<Key, Value>::addFreqNum() {
-  curTotalNum_++;
-  if (nodeMap_.empty())
-    curAverageNum_ = 0;
-  else
-    curAverageNum_ = curTotalNum_ / nodeMap_.size();
-
-  if (curAverageNum_ > maxAverageNum_) {
-    handleOverMaxAverageNum();
-  }
-}
-
-template <typename Key, typename Value>
-void LfuCache<Key, Value>::decreaseFreqNum(int num) {
-  // 减少平均访问频次和总访问频次
-  curTotalNum_ -= num;
-  if (nodeMap_.empty())
-    curAverageNum_ = 0;
-  else
-    curAverageNum_ = curTotalNum_ / nodeMap_.size();
-}
-
-template <typename Key, typename Value>
-void LfuCache<Key, Value>::handleOverMaxAverageNum() {
-  if (nodeMap_.empty())
-    return;
-
-  // 当前平均访问频次已经超过了最大平均访问频次，所有结点的访问频次-
-  // (maxAverageNum_ / 2)
-  for (auto it = nodeMap_.begin(); it != nodeMap_.end(); ++it) {
-    // 检查结点是否为空
-    if (!it->second)
-      continue;
-
-    NodePtr node = it->second;
-
-    // 先从当前频率列表中移除
-    removeFromFreqList(node);
-
-    // 减少频率
-    int oldFreq = node->freq;
-
-    int decay = maxAverageNum_ / 2;
-    node->freq -= decay;
-
-    if (node->freq < 1)
-      node->freq = 1;
-
-    int delta = node->freq - oldFreq;
-    curTotalNum_ += delta;
-
-    // 添加到新的频率列表
-    addToFreqList(node);
-  }
-
-  // 更新最小频率
-  updateMinFreq();
-}
-
-template <typename Key, typename Value>
-void LfuCache<Key, Value>::updateMinFreq() {
-  minFreq_ = INT8_MAX;
-  for (const auto &pair : freqToFreqList_) {
-    if (pair.second && !pair.second->isEmpty()) {
-      minFreq_ = std::min(minFreq_, pair.first);
-    }
-  }
-  if (minFreq_ == INT8_MAX)
-    minFreq_ = 1;
-}
-
-// 并没有牺牲空间换时间，他是把原有缓存大小进行了分片。
-template <typename Key, typename Value> class KHashLfuCache {
+class KHashLfuCache : public ICachePolicy<Key, Value> {
 public:
-  KHashLfuCache(size_t capacity, int sliceNum, int maxAverageNum = 10)
-      : capacity_(capacity),
-        sliceNum_(sliceNum > 0
-                      ? sliceNum
-                      : static_cast<int>(std::thread::hardware_concurrency())) {
-    size_t sliceSize = static_cast<size_t>(
-        std::ceil(capacity_ / static_cast<double>(sliceNum_)));
+  KHashLfuCache(std::size_t capacity, int sliceNum, int maxAverageNum = 10)
+      : capacity_(capacity), sliceNum_(resolveSliceCount(capacity, sliceNum)) {
+    const std::size_t baseSize = capacity_ / sliceNum_;
+    const std::size_t remainder = capacity_ % sliceNum_;
 
-    for (int i = 0; i < sliceNum_; ++i) {
+    for (std::size_t i = 0; i < sliceNum_; ++i) {
+      const std::size_t sliceSize = baseSize + (i < remainder ? 1 : 0);
       lfuSliceCaches_.emplace_back(
           std::make_unique<LfuCache<Key, Value>>(sliceSize, maxAverageNum));
     }
   }
 
-  void put(Key key, Value value) {
-    // 根据key找出对应的lfu分片
-    size_t sliceIndex = Hash(key) % sliceNum_;
-    lfuSliceCaches_[sliceIndex]->put(key, value);
+  void put(const Key &key, const Value &value) override {
+    lfuSliceCaches_[sliceIndex(key)]->put(key, value);
   }
 
-  bool get(Key key, Value &value) {
-    // 根据key找出对应的lfu分片
-    size_t sliceIndex = Hash(key) % sliceNum_;
-    return lfuSliceCaches_[sliceIndex]->get(key, value);
+  bool get(const Key &key, Value &value) override {
+    return lfuSliceCaches_[sliceIndex(key)]->get(key, value);
   }
 
-  Value get(Key key) {
+  Value get(const Key &key) override {
     Value value{};
-    get(key, value);
+    (void)get(key, value);
     return value;
   }
 
-  // 清除缓存
   void purge() {
-    for (auto &lfuSliceCache : lfuSliceCaches_) {
-      lfuSliceCache->purge();
-    }
+    for (auto &cache : lfuSliceCaches_)
+      cache->purge();
   }
 
 private:
-  // 将key计算成对应哈希值
-  size_t Hash(Key key) {
-    std::hash<Key> hashFunc;
-    return hashFunc(key);
+  static std::size_t resolveSliceCount(std::size_t capacity, int requested) {
+    std::size_t count = requested > 0
+                            ? static_cast<std::size_t>(requested)
+                            : std::max(1u, std::thread::hardware_concurrency());
+    if (capacity > 0)
+      count = std::min(count, capacity);
+    return std::max<std::size_t>(1, count);
   }
 
-private:
-  std::size_t capacity_; // 缓存总容量
-  int sliceNum_;         // 缓存分片数量
-  std::vector<std::unique_ptr<LfuCache<Key, Value>>>
-      lfuSliceCaches_; // 缓存lfu分片容器
+  std::size_t sliceIndex(const Key &key) const {
+    return std::hash<Key>{}(key) % sliceNum_;
+  }
+
+  std::size_t capacity_;
+  std::size_t sliceNum_;
+  std::vector<std::unique_ptr<LfuCache<Key, Value>>> lfuSliceCaches_;
 };

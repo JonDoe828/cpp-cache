@@ -165,6 +165,40 @@ TEST_CASE("LRU-K: promotion triggers main cache eviction by LRU order",
   REQUIRE(cache.get(2) == "b");
 }
 
+TEST_CASE("LRU-K: polymorphic get uses history promotion", "[lruk]") {
+  LruKCache<int, std::string> cache(2, 10, 2);
+  ICachePolicy<int, std::string> *policy = &cache;
+
+  policy->put(1, "a");
+  std::string value;
+  REQUIRE(policy->get(1, value));
+  REQUIRE(value == "a");
+  REQUIRE(policy->get(1, value));
+}
+
+TEST_CASE("LRU-K: evicted history does not retain stale values", "[lruk]") {
+  LruKCache<int, std::string> cache(2, 1, 2);
+  cache.put(1, "a");
+  cache.put(2, "b");
+
+  std::string value;
+  REQUIRE_FALSE(cache.get(1, value));
+}
+
+TEST_CASE("LRU-K: polymorphic remove and purge clear history", "[lruk]") {
+  LruKCache<int, std::string> cache(2, 10, 2);
+  LruCache<int, std::string> *base = &cache;
+
+  cache.put(1, "one");
+  base->remove(1);
+  std::string value;
+  REQUIRE_FALSE(cache.get(1, value));
+
+  cache.put(2, "two");
+  base->purge();
+  REQUIRE_FALSE(cache.get(2, value));
+}
+
 TEST_CASE("Sharded LRU: basic put/get works", "[sharded-lru]") {
   KHashLruCaches<int, std::string> cache(/*capacity*/ 4, /*sliceNum*/ 2);
 
@@ -202,4 +236,14 @@ TEST_CASE("Sharded LRU: eviction happens within shard (sliceNum=1)",
   REQUIRE(out == "a");
   REQUIRE(cache.get(3, out));
   REQUIRE(out == "c");
+}
+
+TEST_CASE("Sharded LRU: non-positive slice count has a safe fallback",
+          "[sharded-lru][boundary]") {
+  KHashLruCaches<int, std::string> cache(2, 0);
+  cache.put(1, "a");
+
+  std::string value;
+  REQUIRE(cache.get(1, value));
+  REQUIRE(value == "a");
 }
