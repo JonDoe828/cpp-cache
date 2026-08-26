@@ -2,6 +2,7 @@
 
 #include "raft/MemoryRaftStorage.h"
 #include "raft/RaftNode.h"
+#include "raft/TcpKvClient.h"
 #include "raft/TcpTransport.h"
 #include "storage/CachedKvStore.h"
 #include "storage/InMemoryKvStore.h"

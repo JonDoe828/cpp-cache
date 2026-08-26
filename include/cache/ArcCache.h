@@ -1,12 +1,14 @@
 #pragma once
 
-#include "../ICachePolicy.h"
+#include "cache/ICachePolicy.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <list>
 #include <mutex>
 #include <unordered_map>
+
+namespace cppcache::cache {
 
 template <typename Key, typename Value>
 class ArcCache : public ICachePolicy<Key, Value> {
@@ -210,3 +212,5 @@ private:
   PositionMap b1Positions_;
   PositionMap b2Positions_;
 };
+
+} // namespace cppcache::cache

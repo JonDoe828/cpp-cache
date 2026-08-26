@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ICachePolicy.h"
+#include "cache/ICachePolicy.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -11,6 +11,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+namespace cppcache::cache {
 
 template <typename Key, typename Value>
 class LruCache : public ICachePolicy<Key, Value> {
@@ -251,29 +253,26 @@ private:
 
 // lru优化：对lru进行分片，提高高并发使用的性能
 template <typename Key, typename Value>
-class KHashLruCaches : public ICachePolicy<Key, Value> {
+class ShardedLruCache : public ICachePolicy<Key, Value> {
 public:
-  KHashLruCaches(size_t capacity, int sliceNum)
+  ShardedLruCache(std::size_t capacity, int sliceNum)
       : capacity_(capacity), sliceNum_(resolveSliceCount(capacity, sliceNum)) {
     const std::size_t baseSize = capacity_ / sliceNum_;
     const std::size_t remainder = capacity_ % sliceNum_;
     for (std::size_t i = 0; i < sliceNum_; ++i) {
       const std::size_t sliceSize = baseSize + (i < remainder ? 1 : 0);
-      lruSliceCaches_.emplace_back(
-          std::make_unique<LruCache<Key, Value>>(sliceSize));
+      slices_.emplace_back(std::make_unique<LruCache<Key, Value>>(sliceSize));
     }
   }
 
   void put(const Key &key, const Value &value) override {
     // 获取key的hash值，并计算出对应的分片索引
-    size_t sliceIndex = Hash(key) % sliceNum_;
-    lruSliceCaches_[sliceIndex]->put(key, value);
+    slices_[sliceIndex(key)]->put(key, value);
   }
 
   bool get(const Key &key, Value &value) override {
     // 获取key的hash值，并计算出对应的分片索引
-    size_t sliceIndex = Hash(key) % sliceNum_;
-    return lruSliceCaches_[sliceIndex]->get(key, value);
+    return slices_[sliceIndex(key)]->get(key, value);
   }
 
   Value get(const Key &key) override {
@@ -293,11 +292,14 @@ private:
     return std::max<std::size_t>(1, count);
   }
 
-  std::size_t Hash(const Key &key) const { return std::hash<Key>{}(key); }
+  std::size_t sliceIndex(const Key &key) const {
+    return std::hash<Key>{}(key) % sliceNum_;
+  }
 
 private:
-  std::size_t capacity_; // 总容量
-  std::size_t sliceNum_; // 切片数量
-  std::vector<std::unique_ptr<LruCache<Key, Value>>>
-      lruSliceCaches_; // 切片LRU缓存
+  std::size_t capacity_;                                      // 总容量
+  std::size_t sliceNum_;                                      // 切片数量
+  std::vector<std::unique_ptr<LruCache<Key, Value>>> slices_; // 切片LRU缓存
 };
+
+} // namespace cppcache::cache

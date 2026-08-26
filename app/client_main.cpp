@@ -1,4 +1,4 @@
-#include "raft/TcpTransport.h"
+#include "raft/TcpKvClient.h"
 
 #include <unistd.h>
 
@@ -44,9 +44,8 @@ std::string clientId() {
   std::random_device random;
   const std::uint64_t nonce =
       (static_cast<std::uint64_t>(random()) << 32) ^ random();
-  return "cpp-cache-cli-" + std::to_string(::getuid()) + "@" +
-         hostname.data() + ":" + std::to_string(::getpid()) + ":" +
-         std::to_string(nonce);
+  return "cpp-cache-cli-" + std::to_string(::getuid()) + "@" + hostname.data() +
+         ":" + std::to_string(::getpid()) + ":" + std::to_string(nonce);
 }
 
 void printUsage() {

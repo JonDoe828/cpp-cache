@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ICachePolicy.h"
+#include "cache/ICachePolicy.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+namespace cppcache::cache {
 
 template <typename Key, typename Value>
 class LfuCache : public ICachePolicy<Key, Value> {
@@ -177,26 +179,26 @@ private:
 };
 
 template <typename Key, typename Value>
-class KHashLfuCache : public ICachePolicy<Key, Value> {
+class ShardedLfuCache : public ICachePolicy<Key, Value> {
 public:
-  KHashLfuCache(std::size_t capacity, int sliceNum, int maxAverageNum = 10)
+  ShardedLfuCache(std::size_t capacity, int sliceNum, int maxAverageNum = 10)
       : capacity_(capacity), sliceNum_(resolveSliceCount(capacity, sliceNum)) {
     const std::size_t baseSize = capacity_ / sliceNum_;
     const std::size_t remainder = capacity_ % sliceNum_;
 
     for (std::size_t i = 0; i < sliceNum_; ++i) {
       const std::size_t sliceSize = baseSize + (i < remainder ? 1 : 0);
-      lfuSliceCaches_.emplace_back(
+      slices_.emplace_back(
           std::make_unique<LfuCache<Key, Value>>(sliceSize, maxAverageNum));
     }
   }
 
   void put(const Key &key, const Value &value) override {
-    lfuSliceCaches_[sliceIndex(key)]->put(key, value);
+    slices_[sliceIndex(key)]->put(key, value);
   }
 
   bool get(const Key &key, Value &value) override {
-    return lfuSliceCaches_[sliceIndex(key)]->get(key, value);
+    return slices_[sliceIndex(key)]->get(key, value);
   }
 
   Value get(const Key &key) override {
@@ -206,7 +208,7 @@ public:
   }
 
   void purge() {
-    for (auto &cache : lfuSliceCaches_)
+    for (auto &cache : slices_)
       cache->purge();
   }
 
@@ -226,5 +228,7 @@ private:
 
   std::size_t capacity_;
   std::size_t sliceNum_;
-  std::vector<std::unique_ptr<LfuCache<Key, Value>>> lfuSliceCaches_;
+  std::vector<std::unique_ptr<LfuCache<Key, Value>>> slices_;
 };
+
+} // namespace cppcache::cache

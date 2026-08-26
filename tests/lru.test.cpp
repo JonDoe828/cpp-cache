@@ -3,7 +3,12 @@
 #include <random>
 #include <string>
 
-#include "LruCache.h"
+#include "cache/LruCache.h"
+
+using cppcache::cache::ICachePolicy;
+using cppcache::cache::LruCache;
+using cppcache::cache::LruKCache;
+using cppcache::cache::ShardedLruCache;
 
 TEST_CASE("LRU: put/get basic hit-miss", "[lru]") {
   LruCache<int, std::string> cache(2);
@@ -200,7 +205,7 @@ TEST_CASE("LRU-K: polymorphic remove and purge clear history", "[lruk]") {
 }
 
 TEST_CASE("Sharded LRU: basic put/get works", "[sharded-lru]") {
-  KHashLruCaches<int, std::string> cache(/*capacity*/ 4, /*sliceNum*/ 2);
+  ShardedLruCache<int, std::string> cache(/*capacity*/ 4, /*sliceNum*/ 2);
 
   cache.put(1, "a");
   cache.put(2, "b");
@@ -219,7 +224,7 @@ TEST_CASE("Sharded LRU: basic put/get works", "[sharded-lru]") {
 TEST_CASE("Sharded LRU: eviction happens within shard (sliceNum=1)",
           "[sharded-lru]") {
   // sliceNum=1 => 就是一个 LRU，容量=2
-  KHashLruCaches<int, std::string> cache(/*capacity*/ 2, /*sliceNum*/ 1);
+  ShardedLruCache<int, std::string> cache(/*capacity*/ 2, /*sliceNum*/ 1);
 
   cache.put(1, "a");
   cache.put(2, "b");
@@ -240,7 +245,7 @@ TEST_CASE("Sharded LRU: eviction happens within shard (sliceNum=1)",
 
 TEST_CASE("Sharded LRU: non-positive slice count has a safe fallback",
           "[sharded-lru][boundary]") {
-  KHashLruCaches<int, std::string> cache(2, 0);
+  ShardedLruCache<int, std::string> cache(2, 0);
   cache.put(1, "a");
 
   std::string value;

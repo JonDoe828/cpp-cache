@@ -5,7 +5,10 @@
 #include <string>
 #include <thread>
 
-#include "LfuCache.h"
+#include "cache/LfuCache.h"
+
+using cppcache::cache::LfuCache;
+using cppcache::cache::ShardedLfuCache;
 
 // 说明：
 // 你的实现里：
@@ -134,10 +137,10 @@ TEST_CASE("LFU: negative capacity stores nothing", "[lfu][boundary]") {
   REQUIRE_FALSE(cache.get(1, value));
 }
 
-TEST_CASE("KHashLFU: basic put/get works across slices", "[khashlfu]") {
+TEST_CASE("Sharded LFU: basic put/get works across slices", "[sharded-lfu]") {
   // sliceNum=2，容量总 10（每片 ceil(10/2)=5）
-  KHashLfuCache<int, std::string> cache(/*capacity*/ 10, /*sliceNum*/ 2,
-                                        /*maxAverageNum*/ 1000);
+  ShardedLfuCache<int, std::string> cache(/*capacity*/ 10, /*sliceNum*/ 2,
+                                          /*maxAverageNum*/ 1000);
 
   for (int i = 1; i <= 8; ++i) {
     cache.put(i, "v" + std::to_string(i));

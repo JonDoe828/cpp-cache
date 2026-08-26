@@ -1,5 +1,7 @@
 #pragma once
 
+namespace cppcache::cache {
+
 template <typename Key, typename Value> class ICachePolicy {
 public:
   virtual ~ICachePolicy() = default;
@@ -12,3 +14,5 @@ public:
   // 如果缓存中能找到key，则直接返回value
   virtual Value get(const Key &key) = 0;
 };
+
+} // namespace cppcache::cache

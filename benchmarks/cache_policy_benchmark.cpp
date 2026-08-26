@@ -1,7 +1,7 @@
-#include "../include/arc/ArcCache.h"
-#include "ICachePolicy.h"
-#include "LfuCache.h"
-#include "LruCache.h"
+#include "cache/ArcCache.h"
+#include "cache/ICachePolicy.h"
+#include "cache/LfuCache.h"
+#include "cache/LruCache.h"
 
 #include <array>
 #include <cstdint>
@@ -10,6 +10,12 @@
 #include <random>
 #include <string>
 #include <vector>
+
+using cppcache::cache::ArcCache;
+using cppcache::cache::ICachePolicy;
+using cppcache::cache::LfuCache;
+using cppcache::cache::LruCache;
+using cppcache::cache::LruKCache;
 
 namespace {
 

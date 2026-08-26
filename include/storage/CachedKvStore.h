@@ -1,6 +1,6 @@
 #pragma once
 
-#include "LruCache.h"
+#include "cache/LruCache.h"
 #include "storage/IKvStore.h"
 
 #include <memory>
@@ -24,7 +24,7 @@ public:
 private:
   mutable std::mutex mutex_;
   std::unique_ptr<IKvStore> backingStore_;
-  LruCache<std::string, std::string> cache_;
+  cppcache::cache::LruCache<std::string, std::string> cache_;
 };
 
 } // namespace cppcache::storage

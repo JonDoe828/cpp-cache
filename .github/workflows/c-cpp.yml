@@ -18,3 +18,20 @@ jobs:
       run: cmake --build build --parallel 2
     - name: Test
       run: ctest --test-dir build --output-on-failure
+
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Configure
+      run: >-
+        cmake -S . -B build-tsan
+        -DCMAKE_BUILD_TYPE=Debug
+        -DCPP_CACHE_ENABLE_TSAN=ON
+    - name: Build
+      run: cmake --build build-tsan --parallel 2
+    - name: Test
+      run: >-
+        setarch "$(uname -m)" -R
+        ctest --test-dir build-tsan --output-on-failure

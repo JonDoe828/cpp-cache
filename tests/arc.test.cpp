@@ -4,7 +4,9 @@
 #include <string>
 #include <thread>
 
-#include "arc/ArcCache.h"
+#include "cache/ArcCache.h"
+
+using cppcache::cache::ArcCache;
 
 TEST_CASE("ARC: basic put, get, and update", "[arc]") {
   ArcCache<int, std::string> cache(2);
